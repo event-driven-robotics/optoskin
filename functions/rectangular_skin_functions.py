@@ -1968,3 +1968,174 @@ def centroid_from_press(press_container, time_windows=[(0, 3)],
                             eps=eps, min_samples=min_samples)
 
 
+#%% Plot for Heat Map Error
+import numpy as np
+import matplotlib.pyplot as plt
+import matplotlib.patches as patches
+import math
+from shapely.geometry import Polygon
+from scipy.interpolate import griddata  # <-- needed for heatmap interpolation
+
+# Helper – camera field-of-view as a polygon fan
+def get_fov_polygon(cam_x, cam_y, fov_deg, fov_len=500,
+                    skew_deg=0, num_pts=100):
+    half = fov_deg / 2
+    angles = np.linspace(-half, half, num_pts)
+    angles_rad = np.deg2rad(angles + skew_deg)
+    points = [(cam_x, cam_y)] + [
+        (cam_x + fov_len * np.cos(a),
+         cam_y + fov_len * np.sin(a)) for a in angles_rad
+    ]
+    return Polygon(points)
+
+# Helper – build sensor polygon with chamfered and rounded corners
+def build_sensor_polygon(cx, cy, sensor_w, sensor_h,
+                         chamfer=20, round_r=25, n_arc=18):
+    left   = cx - sensor_w / 2
+    right  = cx + sensor_w / 2
+    bottom = cy - sensor_h / 2
+    top    = cy + sensor_h / 2
+
+    def quarter_arc(center, start_deg, end_deg):
+        ang = np.linspace(start_deg, end_deg, n_arc, endpoint=False)[1:]
+        return [(center[0] + round_r*np.cos(np.deg2rad(a)),
+                 center[1] + round_r*np.sin(np.deg2rad(a))) for a in ang]
+
+    pts = []
+    pts.append((left + round_r, bottom))
+    pts.append((right - chamfer, bottom))
+    pts.append((right, bottom + chamfer))
+    pts.append((right, top - chamfer))
+    pts.append((right - chamfer, top))
+    pts.append((left + round_r, top))
+    pts.extend(quarter_arc((left + round_r, top - round_r), 90, 180))
+    pts.append((left, bottom + round_r))
+    pts.extend(quarter_arc((left + round_r, bottom + round_r), 180, 270))
+    return Polygon(pts)
+
+# Plot camera coverage and overlap + heatmap
+def plot_camera_coverage_with_heatmap(po, sensor_width, sensor_height,
+                                      p1, p2,
+                                      intersections=None,
+                                      press_coordinates=None,
+                                      fov_camera1=120, fov_camera2=120,
+                                      skew_angle1=0, skew_angle2=0,
+                                      fov_length=130,
+                                      chamfer=20, round_r=25):
+    # Sensor polygon
+    sensor_poly = build_sensor_polygon(po['xo'], po['yo'],
+                                       sensor_width, sensor_height,
+                                       chamfer=chamfer,
+                                       round_r=round_r)
+
+    # FOV polygons
+    fov1 = get_fov_polygon(p1['x1'], p1['y1'], fov_camera1,
+                           fov_length, skew_angle1)
+    fov2 = get_fov_polygon(p2['x2'], p2['y2'], fov_camera2,
+                           fov_length, skew_angle2)
+
+    # Intersections (coverage)
+    cov1 = fov1.intersection(sensor_poly)
+    cov2 = fov2.intersection(sensor_poly)
+    overlap = cov1.intersection(cov2)
+
+    # Plotting
+    fig, ax = plt.subplots(figsize=(15, 12))
+    ax.set_xlim([75, -75])
+    ax.set_ylim([85, -75])
+    ax.set_aspect('equal')
+    ax.set_xlabel("X (mm)")
+    ax.set_ylabel("Y (mm)")
+    ax.set_title("Camera coverage on chamfered & rounded sensor + Error Heatmap")
+
+    # Sensor outline
+    ax.add_patch(patches.Polygon(np.array(sensor_poly.exterior.coords),
+                                 closed=True, edgecolor='black', facecolor='none',
+                                 linewidth=1.4, label='Sensor'))
+
+    # FOV fans
+    ax.add_patch(patches.Polygon(np.array(fov1.exterior.coords),
+                                 color='red', alpha=0.25, label='Cam 1 FOV'))
+    ax.add_patch(patches.Polygon(np.array(fov2.exterior.coords),
+                                 color='blue', alpha=0.25, label='Cam 2 FOV'))
+
+    # Overlap
+    if not overlap.is_empty:
+        ax.add_patch(patches.Polygon(np.array(overlap.exterior.coords),
+                                     color='purple', alpha=0.35, label='Overlap'))
+
+    # Camera symbols
+    ax.scatter(p1['x1'], p1['y1'], color='red', marker='s', s=60)
+    ax.scatter(p2['x2'], p2['y2'], color='blue', marker='s', s=60)
+
+    # ---------- Heatmap inside sensor ------------------------------------
+    if intersections is not None and press_coordinates is not None:
+        xy_gt = []
+        errs = []
+        for est, gt in zip(intersections, press_coordinates):
+            if est and isinstance(est, dict):
+                x_gt, y_gt = gt['x'], gt['y']
+                x_est, y_est = est.get('xi'), est.get('yi')
+                if x_est is not None and y_est is not None:
+                    xy_gt.append([x_gt, y_gt])
+                    errs.append(np.hypot(x_gt - x_est, y_gt - y_est))
+        if len(xy_gt) > 3:
+            xy_gt = np.array(xy_gt)
+            errs = np.array(errs)
+            rect_x = po['xo'] - sensor_width / 2
+            rect_y = po['yo'] - sensor_height / 2
+            gx, gy = np.mgrid[rect_x:rect_x + sensor_width:500j,
+                              rect_y:rect_y + sensor_height:500j]
+            grid = griddata(xy_gt, errs, (gx, gy), method='cubic')
+            im = ax.imshow(grid.T,
+                           extent=(rect_x, rect_x + sensor_width,
+                                   rect_y, rect_y + sensor_height),
+                           origin='lower', cmap='RdYlGn_r', alpha=0.85, zorder=5)
+            cbar = fig.colorbar(im, ax=ax, shrink=0.7, pad=0.01)
+            cbar.set_label("Localization Error (mm)", fontsize=7)
+            cbar.ax.tick_params(labelsize=6)
+
+    ax.legend(fontsize=7, loc='upper right')
+    ax.grid(True)
+    plt.show()
+
+#%% CMRE Functions
+
+import numpy as np
+
+def build_one_hot_map(gt_x, gt_y, x_edges, y_edges):
+    T = np.zeros((len(x_edges)-1, len(y_edges)-1))
+    i = np.searchsorted(x_edges, gt_x, side='right') - 1
+    j = np.searchsorted(y_edges, gt_y, side='right') - 1
+    i = max(0, min(i, T.shape[0]-1))
+    j = max(0, min(j, T.shape[1]-1))
+    T[i, j] = 1.0
+    return T
+
+def build_recon_map(est_x, est_y, x_edges, y_edges, sigma=1.0):
+    x_centers = (x_edges[:-1] + x_edges[1:]) / 2
+    y_centers = (y_edges[:-1] + y_edges[1:]) / 2
+    Xc, Yc = np.meshgrid(x_centers, y_centers, indexing='ij')
+    R = np.exp(-((Xc - est_x)**2 + (Yc - est_y)**2) / (2*sigma**2))
+    R /= R.max() if R.max() > 0 else 1
+    return R
+
+def compute_CMRE(R, T, SR):
+    n_x, n_y = R.shape
+    true_i, true_j = np.argwhere(T==1)[0]
+    ii, jj = np.indices(R.shape)
+    d = np.sqrt((ii-true_i)**2 + (jj-true_j)**2)
+    C = np.tanh(3.5 * (R - T)**2)
+    W = -1.0 / ((SR/35)**2 + d**2)
+    W[true_i, true_j] = +1.0
+    return np.sum(W * C)
+
+def global_error(intersections, press_coords, x_edges, y_edges, SR, sigma=1.0):
+    cmres = []
+    for est, gt in zip(intersections, press_coords):
+        if not est or est==0: 
+            continue
+        R = build_recon_map(est['xi'], est['yi'], x_edges, y_edges, sigma)
+        T = build_one_hot_map(gt['x'], gt['y'], x_edges, y_edges)
+        cmres.append(compute_CMRE(R, T, SR))
+    return np.mean(cmres), np.std(cmres)
