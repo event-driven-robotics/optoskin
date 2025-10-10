@@ -118,6 +118,6 @@ def plot_side_by_side(grid, R, med, band, latencies, y_floor=1e-1, ax=None, colo
     plt.xlabel("Time from median latency [s]")
     plt.ylabel("Event rate [Hz] (log, zeros shown as 0)")
     #plt.title("Aligned rate rise (time shifted so median latency = 0)")
-    plt.legend()
+    # plt.legend()
     plt.tight_layout()
-    plt.show()
+    # plt.show()

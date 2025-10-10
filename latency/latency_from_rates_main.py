@@ -377,3 +377,5 @@ lat5 = results['latency_5_95'][0] - results['median_latency']
 lat95 = results['latency_5_95'][1] - results['median_latency']
 plt.axvline(lat5, ls="--", lw=2)
 plt.axvline(lat95, ls="--", lw=2, label='Detection latency 5-95%')
+plt.legend(loc='upper right', fontsize=5.7)  
+plt.show()
